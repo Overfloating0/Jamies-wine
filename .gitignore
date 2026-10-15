@@ -1,0 +1,6 @@
+*.log
+*.dmp
+*.zip
+reframework/data/
+.DS_Store
+Thumbs.db
