@@ -37,7 +37,8 @@ function M.phase(now, anchor, period, offset_ms)
     if not M.finite(anchor.seconds) or anchor.seconds < 0 then return nil, "Invalid beat anchor." end
     local seconds = now - anchor.seconds - offset_ms / 1000
     -- Positive modulo deliberately supports positions BEFORE the anchor and negative offsets.
-    return ((seconds / period + (anchor.peak and M.PEAK_PHASE or 0)) % 1)
+    local position = seconds / period + (anchor.peak and M.PEAK_PHASE or 0)
+    return position % 1, math.floor(position)
 end
 
 function M.sample(phase, amplitude)
@@ -85,13 +86,12 @@ end
 function M.at_time(now, anchor, settings, amplitude)
     local t, err = M.period(settings.mode, settings.bpm, settings.beats)
     if not t then return nil, err end
-    local u
-    u, err = M.phase(now, anchor, t, settings.offset_ms)
-    if not u then return nil, err end
+    local u, cycle = M.phase(now, anchor, t, settings.offset_ms)
+    if not u then return nil, cycle end
     local scale
     scale, err = M.sample(u, amplitude or settings.amplitude)
     if not scale then return nil, err end
-    return scale, u, t
+    return scale, u, t, cycle % 2 + 1
 end
 
 return M

@@ -2,7 +2,7 @@
 // Build the standalone REFramework script without third-party Node dependencies.
 const fs = require('node:fs'), path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const modules = ['effects','clock','config','hotkeys','targets','sf6_adapter','throw_history','throw_rules','stomp_detector','throw_shrink','throw_probe','main'];
+const modules = ['effects','clock','config','hotkeys','targets','sf6_adapter','throw_history','throw_rules','stomp_detector','throw_shrink','throw_probe','background_models','background','main'];
 const main = fs.readFileSync(path.join(root,'src/jellymod/main.lua'),'utf8');
 const version = main.match(/local VERSION = "([0-9.]+)"/)[1];
 const included = new Set();

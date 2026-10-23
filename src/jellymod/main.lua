@@ -7,7 +7,8 @@ local throw_shrink = require("jellymod.throw_shrink")
 local config = require("jellymod.config")
 local clock = require("jellymod.clock").new(os.clock)
 local hotkeys = require("jellymod.hotkeys").new(function(key) return reframework:is_key_down(key) end)
-local VERSION = "0.1.0"
+local VERSION = "0.2.0"
+local background = require("jellymod.background").new(adapter, VERSION)
 local PREFIX = "[JamiesWine][" .. VERSION .. "] "
 local prefs, config_error = config.load(json)
 local settings = prefs.rhythm
@@ -124,6 +125,7 @@ local function restore_slot(slot)
 end
 
 local function stop_all(reason)
+    background:restore()
     enabled, shrink_command = false, nil
     shrink:clear()
     local a, b = restore_slot(1), restore_slot(2)
@@ -203,7 +205,7 @@ local function update(write_effect)
             last_drinks, save_command = signature, true
         end
     else last_drinks = nil end
-    local multiplier, phase, period = effects.at_time(now, anchor or { seconds = now }, settings, amplitude)
+    local multiplier, phase, period, active_slot = effects.at_time(now, anchor or { seconds = now }, settings, amplitude)
     assert(multiplier, phase)
     local clock_valid = effects.finite(mode.frame) and mode.frame >= 0 and mode.frame % 1 == 0
         and effects.finite(mode.round) and mode.round >= 0 and mode.round % 1 == 0
@@ -274,7 +276,8 @@ local function update(write_effect)
     for slot = 1, 2 do
         if wants_transform(slot) then
             assert(not (capture and capture.meta.label == "baseline"), "Baseline capture must keep effects off")
-            local combined = effects.body_multiplier(prefs.body[slot], shrink:height(slot), requested[slot] and multiplier or nil)
+            local jelly_active = requested[slot] and (not prefs.alternate or slot == active_slot)
+            local combined = effects.body_multiplier(prefs.body[slot], shrink:height(slot), jelly_active and multiplier or nil)
             results[slot] = manager:apply(slot, contexts[slot], combined)
         elseif manager.slots[slot] then
             -- Round/training resets may remove the last shrink on this very callback.
@@ -285,6 +288,7 @@ local function update(write_effect)
         callback = report.callbacks, phase = phase, period = period,
         multiplier = multiplier, amplitude = amplitude, drinks = drinks, p1 = results[1], p2 = results[2] }
     if enabled and shrink_enabled and not clock_valid then status = tr("果冻按真实时间运行；缩矮等待游戏帧数据。", "Real-time jelly; shrink waiting for game frame data.")
+    elseif enabled and prefs.alternate then status = tr("交替变形；当前轮到 P", "Alternating; current turn: P") .. active_slot
     elseif enabled then status = tr("已开启；双方共用真实时间节拍。", "Enabled; P1/P2 share the real-time beat.")
     else status = tr("效果关闭，参数已就绪。", "Effects OFF. Presets ready.") end
     if capture and not capture.stopped then
@@ -365,6 +369,9 @@ re.on_frame(function()
         faulted = manager.slots[1] ~= nil or manager.slots[2] ~= nil
         save_command = true
     end
+    guarded("background", function()
+        background:frame(not faulted and clock:now() or nil, anchor, settings, enabled and not faulted)
+    end)
     if shrink_command and not faulted then
         local command = shrink_command
         shrink_command = nil
@@ -436,6 +443,7 @@ local function draw_panel()
         imgui.text(tr("配置未保存或已回退默认值：", "Settings warning: ") .. config_error)
         if imgui.button(tr("重试保存配置", "Retry saving settings") .. "###save_settings") then config_dirty = true end
     end
+    background:draw()
     local locked = faulted or capture and capture.meta.label == "baseline"
     imgui.begin_disabled(locked and true or false)
     changed, value = imgui.checkbox(tr("总开关", "Enable effects") .. "###enabled", enabled)
@@ -446,6 +454,12 @@ local function draw_panel()
     for slot = 1, 2 do
         changed, value = imgui.checkbox("P" .. slot .. tr(" 果冻", " jelly") .. "###p" .. slot, requested[slot])
         if changed then requested[slot] = value; changed_preferences() end
+    end
+    changed, value = imgui.checkbox(tr("双人交替变形", "Alternate P1 / P2") .. "###alternate", prefs.alternate)
+    if changed then prefs.alternate = value; changed_preferences() end
+    if prefs.alternate then
+        imgui.text(tr("每个周期换一方，默认一拍一次；勾选双方果冻。重启周期从 P1 开始。",
+            "One player per cycle (default: one beat). Enable both jelly switches. Restart cycle begins with P1."))
     end
     changed, value = imgui.checkbox(tr("桑吉尔夫投技 / 踩踏缩矮", "Zangief throw / stomp shrink") .. "###shrink", shrink_enabled)
     if changed then shrink_command = value and "on" or "off" end
@@ -596,6 +610,7 @@ re.on_script_reset(function()
         local ok, err = config.save(json, prefs)
         if not ok then log.error(PREFIX .. tostring(err)) end
     end
+    background:stop()
     probe:stop("script reset")
     stop_all("Script reset")
     stop_capture("script reset")

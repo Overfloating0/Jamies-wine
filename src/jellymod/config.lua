@@ -3,7 +3,7 @@ local effects = require("jellymod.effects")
 local M = { PATH = "SF6Jelly_settings.json" }
 function M.defaults()
     return { schema = 1, language = "zh", font_size = 40, auto_start = false, enabled = false,
-        p1 = true, p2 = true, shrink = false,
+        p1 = true, p2 = true, shrink = false, alternate = false,
         drink_link = false, hotkeys = { toggle = 117, restore = 118 },
         body = { { enabled = false, height = 1, width = 1 }, { enabled = false, height = 1, width = 1 } },
         rhythm = { mode = "bpm", bpm = 130, beats = 1, amplitude = 0.75, offset_ms = 0 } }
@@ -18,6 +18,10 @@ function M.validate(raw)
         p[k] = raw[k]
     end
     if raw.language ~= "zh" and raw.language ~= "en" then return M.defaults(), "Invalid language" end
+    if raw.alternate ~= nil then
+        if type(raw.alternate) ~= "boolean" then return M.defaults(), "Invalid alternating setting" end
+        p.alternate = raw.alternate
+    end
     if raw.drink_link ~= nil then
         if type(raw.drink_link) ~= "boolean" then return M.defaults(), "Invalid drink link setting" end
         p.drink_link = raw.drink_link
