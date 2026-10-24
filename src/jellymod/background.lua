@@ -34,9 +34,13 @@ function M.new(adapter,version)
     local self={status="尚未载入背景 / Background not loaded"}
     local models=require("jellymod.background_models").new(adapter,version,scene,inspect)
     local queue,owner,players,mode_key,scene_key,cursor
+    local auto_key,next_check,last_enabled=nil,0,false
     local function release() queue,owner,players=nil,nil,nil end
     function self:request() self.requested=true end
-    function self:restore() self.requested=false;release();return models:restore() end
+    function self:restore()
+        if queue then auto_key=nil;next_check=0 end
+        self.requested=false;release();return models:restore()
+    end
     function self:stop() self.requested=false;release();return models:clear() end
     local function step()
         if self.requested then
@@ -71,9 +75,34 @@ function M.new(adapter,version)
             self.status="背景已载入 / Background loaded"..(capped and "（已达512个模型上限 / Limit reached）" or "")
             if self.skipped>0 then self.status=self.status.."；跳过 / Skipped: "..self.skipped end
             release()
+            models:set_rhythm(true)
         else self.status="载入中 / Loading: "..(cursor-1).." / "..math.min(#queue,512) end
     end
     function self:frame(now,anchor,settings,enabled)
+        -- Cheap readiness checks are throttled; enumerate meshes once per scene/roster.
+        if now and now>=next_check then
+            next_check=now+0.5
+            local ok,err=pcall(function()
+                local mode=adapter.mode()
+                local identity
+                if mode.allowed then
+                    local p1,p2=adapter.resolve(1,mode),adapter.resolve(2,mode)
+                    if p1.ready and p2.ready then
+                        local current=scene()
+                        if current then identity=mode.key..":"..key(current)..":"..p1.root_key..":"..p2.root_key end
+                    end
+                end
+                if identity~=auto_key then
+                    auto_key=identity;self.requested=false;release()
+                    if not models:clear() then self.status="请先恢复背景 / Restore background first";return end
+                    if identity then self:request()
+                    else self.status="等待进入场景 / Waiting for scene" end
+                end
+            end)
+            if not ok then self.status="自动载入失败 / Auto load failed: "..tostring(err) end
+        end
+        if enabled and not last_enabled then models:set_rhythm(true) end
+        last_enabled=enabled and true or false
         if self.requested or queue then
             local ok,err=pcall(step)
             if not ok then self.requested=false;release();models:clear();self.status="载入失败 / Load failed: "..tostring(err) end
@@ -81,6 +110,7 @@ function M.new(adapter,version)
     end
     function self:draw()
         if not imgui.tree_node("背景变形 / Background###background") then return end
+        imgui.text("进入场景后自动载入；开启总开关默认启用背景果冻。")
         if imgui.button("载入当前场景背景 / Load background###load_background") then self:request() end
         imgui.text(self.status)
         if not self.requested and not queue then models:draw() end
