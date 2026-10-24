@@ -6,14 +6,16 @@ local throw_probe = require("jellymod.throw_probe")
 local throw_shrink = require("jellymod.throw_shrink")
 local config = require("jellymod.config")
 local clock = require("jellymod.clock").new(os.clock)
-local hotkeys = require("jellymod.hotkeys").new(function(key) return reframework:is_key_down(key) end)
-local VERSION = "0.2.0"
+local key_options = require("jellymod.hotkeys")
+local hotkeys = key_options.new(function(key) return reframework:is_key_down(key) end)
+local VERSION = "0.2.1"
 local background = require("jellymod.background").new(adapter, VERSION)
 local PREFIX = "[JamiesWine][" .. VERSION .. "] "
 local prefs, config_error = config.load(json)
 local settings = prefs.rhythm
 local requested = { prefs.p1, prefs.p2 }
 local enabled = prefs.auto_start and prefs.enabled
+local single, playback_command
 local config_dirty = false
 local function tr(zh, en) return prefs.language == "zh" and zh or en end
 local manager = targets.new(adapter.write)
@@ -53,7 +55,8 @@ local function copy_settings()
 end
 
 local function wants_transform(slot)
-    return enabled and (requested[slot] or prefs.body[slot].enabled or shrink_enabled and shrink:height(slot) < 1)
+    return enabled and (prefs.continuous and requested[slot] or single and single.slot == slot
+        or prefs.body[slot].enabled or shrink_enabled and shrink:height(slot) < 1)
 end
 
 local function event(kind, detail)
@@ -67,6 +70,7 @@ local function save()
     report.settings, report.anchor = copy_settings(), anchor
     report.monotonic_clock = clock:diagnostics()
     report.intent = { enabled = enabled, p1 = requested[1], p2 = requested[2] }
+    report.playback = { continuous = prefs.continuous, single = single }
     report.body, report.hotkeys = prefs.body, prefs.hotkeys
     report.drinks = { enabled = prefs.drink_link, players = preview.drinks,
         amplitude = preview.amplitude, issue = preview.drink_issue }
@@ -125,6 +129,7 @@ local function restore_slot(slot)
 end
 
 local function stop_all(reason)
+    single, playback_command = nil, nil
     background:restore()
     enabled, shrink_command = false, nil
     shrink:clear()
@@ -179,6 +184,7 @@ end
 
 local function update(write_effect)
     local now = clock:now()
+    if single and now >= single.started + single.period then single = nil end
     -- A motion update is already a fresh scene check. Do not repeat it in on_frame.
     last_preview = now
     if enabled and not anchor then anchor = { seconds = now, peak = false } end
@@ -221,6 +227,7 @@ local function update(write_effect)
         preview.players[slot] = { name = c.name, character = c.character, ready = c.ready, issue = c.issue }
     end
     if not ready then
+        single = nil
         if session_key or manager.slots[1] or manager.slots[2] then
             local a, b = restore_slot(1), restore_slot(2)
             if not a or not b then error("Scene exit recovery pending") end
@@ -238,6 +245,7 @@ local function update(write_effect)
         .. ":" .. contexts[2].owner .. ":" .. contexts[2].joint_key
     if identity ~= session_key then
         if session_key then
+            single = nil
             local a, b = restore_slot(1), restore_slot(2)
             if not a or not b then error("Character change recovery pending") end
             -- One player may retain its object while the other respawns. Its pre-restore
@@ -276,8 +284,10 @@ local function update(write_effect)
     for slot = 1, 2 do
         if wants_transform(slot) then
             assert(not (capture and capture.meta.label == "baseline"), "Baseline capture must keep effects off")
-            local jelly_active = requested[slot] and (not prefs.alternate or slot == active_slot)
-            local combined = effects.body_multiplier(prefs.body[slot], shrink:height(slot), jelly_active and multiplier or nil)
+            local jelly_active = prefs.continuous and requested[slot] and (not prefs.alternate or slot == active_slot)
+            local jelly = jelly_active and multiplier or nil
+            if single and single.slot == slot then jelly = effects.sample((now - single.started) / single.period, amplitude) end
+            local combined = effects.body_multiplier(prefs.body[slot], shrink:height(slot), jelly)
             results[slot] = manager:apply(slot, contexts[slot], combined)
         elseif manager.slots[slot] then
             -- Round/training resets may remove the last shrink on this very callback.
@@ -288,6 +298,8 @@ local function update(write_effect)
         callback = report.callbacks, phase = phase, period = period,
         multiplier = multiplier, amplitude = amplitude, drinks = drinks, p1 = results[1], p2 = results[2] }
     if enabled and shrink_enabled and not clock_valid then status = tr("果冻按真实时间运行；缩矮等待游戏帧数据。", "Real-time jelly; shrink waiting for game frame data.")
+    elseif enabled and single then status = tr("单次变形：P", "Single cycle: P") .. single.slot
+    elseif enabled and not prefs.continuous then status = tr("持续变形已停止，等待单次触发。", "Continuous jelly stopped; ready for a single cycle.")
     elseif enabled and prefs.alternate then status = tr("交替变形；当前轮到 P", "Alternating; current turn: P") .. active_slot
     elseif enabled then status = tr("已开启；双方共用真实时间节拍。", "Enabled; P1/P2 share the real-time beat.")
     else status = tr("效果关闭，参数已就绪。", "Effects OFF. Presets ready.") end
@@ -333,7 +345,7 @@ local function set_enabled(value)
     enabled, prefs.enabled = value, value
     last_preview = -1 -- explicit user action takes effect on the next callback
     if value and not anchor then anchor_command = "start" end
-    if not value then shrink:clear() end
+    if not value then shrink:clear(); single, playback_command = nil, nil end
     config_dirty, save_command = true, true
 end
 
@@ -359,6 +371,8 @@ re.on_frame(function()
         elseif command == "restore" then enabled, restore_command = false, true
         elseif command == "toggle" and not faulted and not (capture and capture.meta.label == "baseline") then
             set_enabled(not enabled)
+        elseif command and not faulted and not (capture and capture.meta.label == "baseline") then
+            playback_command = command
         end
     end
     -- Stop/recovery also works if animation callbacks do not run while paused.
@@ -368,6 +382,40 @@ re.on_frame(function()
         prefs.enabled, config_dirty = false, true
         faulted = manager.slots[1] ~= nil or manager.slots[2] ~= nil
         save_command = true
+    end
+    if playback_command and not faulted then
+        local command = playback_command
+        playback_command = nil
+        guarded("manual cycle", function()
+            update(false) -- Reject triggers during menus/loading; never queue a later surprise pulse.
+            if not preview.ready then return end
+            for slot = 1, 2 do
+                if not restore_slot(slot) then error("Manual cycle recovery pending") end
+            end
+            local now = clock:now()
+            single, anchor_command = nil, nil
+            prefs.continuous = command == "start"
+            if prefs.continuous then
+                anchor = { seconds = now, peak = false, offset_ms = 0 }
+            else
+                single = { slot = command == "single1" and 1 or 2, started = now,
+                    period = effects.period(settings.mode, settings.bpm, settings.beats) }
+            end
+            set_enabled(true)
+        end)
+    end
+    -- Recovery still happens on time when the game skips animation callbacks.
+    if single and clock:now() >= single.started + single.period then
+        local slot = single.slot
+        single = nil
+        guarded("single cycle end", function()
+            local mode = adapter.mode()
+            local contexts = { adapter.resolve(1, mode), adapter.resolve(2, mode) }
+            if not faulted and wants_transform(slot) and mode.allowed and contexts[1].ready and contexts[2].ready then
+                assert(not targets.conflict(contexts[1], contexts[2]), "Targets overlap during single cycle recovery")
+                manager:apply(slot, contexts[slot], effects.body_multiplier(prefs.body[slot], shrink:height(slot)))
+            elseif not restore_slot(slot) then error("Recovery pending") end
+        end)
     end
     guarded("background", function()
         background:frame(not faulted and clock:now() or nil, anchor, settings, enabled and not faulted)
@@ -457,6 +505,13 @@ local function draw_panel()
     end
     changed, value = imgui.checkbox(tr("双人交替变形", "Alternate P1 / P2") .. "###alternate", prefs.alternate)
     if changed then prefs.alternate = value; changed_preferences() end
+    changed, value = imgui.checkbox(tr("持续变形", "Continuous jelly") .. "###continuous", prefs.continuous)
+    if changed then prefs.continuous = value; single = nil; changed_preferences() end
+    if imgui.button(tr("开始持续周期", "Start continuous cycles") .. "###cycle_start") then playback_command = "start" end
+    if imgui.button(tr("P1 变形一次", "P1 single cycle") .. "###cycle_single1") then playback_command = "single1" end
+    if imgui.button(tr("P2 变形一次", "P2 single cycle") .. "###cycle_single2") then playback_command = "single2" end
+    imgui.text(tr("使用快捷键前，请按 Insert 隐藏 REFramework 面板；面板打开时请点击上方按钮。",
+        "Press Insert to hide REFramework before using hotkeys. While the panel is open, use the buttons above."))
     if prefs.alternate then
         imgui.text(tr("每个周期换一方，默认一拍一次；勾选双方果冻。重启周期从 P1 开始。",
             "One player per cycle (default: one beat). Enable both jelly switches. Restart cycle begins with P1."))
@@ -555,16 +610,20 @@ local function draw_panel()
     if changed then prefs.auto_start = value; changed_preferences() end
     if imgui.tree_node(tr("快捷键", "Hotkeys") .. "###hotkeys") then
         local labels = { tr("禁用", "Disabled") }
-        for i = 1, 12 do labels[#labels + 1] = "F" .. i end
-        for _, name in ipairs({ "toggle", "restore" }) do
+        for i = 2, #key_options.labels do labels[i] = key_options.labels[i] end
+        local names = { toggle = tr("总开关键", "Toggle key"), restore = tr("恢复键", "Restore key"),
+            start = tr("开始持续周期键", "Start cycles key"), single1 = tr("P1 单次变形键", "P1 single key"),
+            single2 = tr("P2 单次变形键", "P2 single key") }
+        for _, name in ipairs(key_options.actions) do
             local key = prefs.hotkeys[name]
-            changed, value = imgui.combo((name == "toggle" and tr("总开关键", "Toggle key") or tr("恢复键", "Restore key"))
-                .. "###key_" .. name, key == 0 and 1 or key - 110, labels)
+            changed, value = imgui.combo(names[name] .. "###key_" .. name, key_options.index(key), labels)
             if changed then
-                local candidate = value == 1 and 0 or value + 110
-                local other = name == "toggle" and "restore" or "toggle"
-                if candidate ~= 0 and candidate == prefs.hotkeys[other] then
-                    hotkey_error = tr("两个快捷键应不同，请重新选择。", "Choose two different hotkeys.")
+                local candidate, duplicate = key_options.keys[value], false
+                for _, other in ipairs(key_options.actions) do
+                    if other ~= name and candidate ~= 0 and candidate == prefs.hotkeys[other] then duplicate = true end
+                end
+                if duplicate then
+                    hotkey_error = tr("快捷键不能重复，请重新选择。", "Hotkeys must be different.")
                 else
                     prefs.hotkeys[name] = candidate
                     hotkey_error, hotkey_fault = nil, false; hotkeys:reset(); changed_preferences()
@@ -573,6 +632,10 @@ local function draw_panel()
         end
         imgui.text(tr("默认 F6 总开关、F7 全部恢复。隐藏 REFramework 面板后生效，长按只触发一次。",
             "Default F6 toggles effects; F7 restores all. Works with the REFramework panel hidden, once per press."))
+        imgui.text(tr("[ 开始持续周期；] P1 一次；\\ P2 一次。单次触发停止双方持续变形。",
+            "[ starts cycles; ] pulses P1; \\ pulses P2. A single trigger stops continuous jelly for both players."))
+        imgui.text(tr("手动触发立即开始，不叠加偏移；单次结束保留自定义体型与投技缩矮。",
+            "Manual triggers start immediately, without offset. Single cycles preserve custom body and throw height."))
         if hotkey_error then imgui.text(hotkey_error) end
         imgui.tree_pop()
     end

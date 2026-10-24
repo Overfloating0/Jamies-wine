@@ -26,7 +26,8 @@ for _ = 1, 60 do
         - (2 + 2 / (1 - u)) * math.sin(4 * math.pi * u)
     if derivative > 0 then lo = u else hi = u end
 end
-M.PEAK_PHASE = (lo + hi) / 2
+local original_peak = (lo + hi) / 2
+M.PEAK_PHASE = original_peak / 2
 
 function M.phase(now, anchor, period, offset_ms)
     if not M.finite(now) or now < 0 or not M.finite(period)
@@ -46,6 +47,9 @@ function M.sample(phase, amplitude)
         return nil, "Strength must be between 0 and 1."
     end
     local u = phase % 1
+    -- Reach the first squash twice as fast; keep the cycle length and peak depth.
+    if u <= M.PEAK_PHASE then u = u * 2
+    else u = original_peak + (u - M.PEAK_PHASE) * (1 - original_peak) / (1 - M.PEAK_PHASE) end
     local y = 1 - amplitude * math.sin(4 * math.pi * u) * math.exp(-2 * u) * (1 - u)^2
     local side = 1 / math.sqrt(y)
     return { x = side, y = y, z = side }
@@ -86,7 +90,7 @@ end
 function M.at_time(now, anchor, settings, amplitude)
     local t, err = M.period(settings.mode, settings.bpm, settings.beats)
     if not t then return nil, err end
-    local u, cycle = M.phase(now, anchor, t, settings.offset_ms)
+    local u, cycle = M.phase(now, anchor, t, anchor and anchor.offset_ms or settings.offset_ms)
     if not u then return nil, cycle end
     local scale
     scale, err = M.sample(u, amplitude or settings.amplitude)

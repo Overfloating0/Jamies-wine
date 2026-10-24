@@ -1,10 +1,11 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 local effects = require("jellymod.effects")
+local hotkeys = require("jellymod.hotkeys")
 local M = { PATH = "SF6Jelly_settings.json" }
 function M.defaults()
     return { schema = 1, language = "zh", font_size = 40, auto_start = false, enabled = false,
-        p1 = true, p2 = true, shrink = false, alternate = false,
-        drink_link = false, hotkeys = { toggle = 117, restore = 118 },
+        p1 = true, p2 = true, shrink = false, alternate = false, continuous = true,
+        drink_link = false, hotkeys = { toggle = 117, restore = 118, start = 219, single1 = 221, single2 = 220 },
         body = { { enabled = false, height = 1, width = 1 }, { enabled = false, height = 1, width = 1 } },
         rhythm = { mode = "bpm", bpm = 130, beats = 1, amplitude = 0.75, offset_ms = 0 } }
 end
@@ -18,6 +19,10 @@ function M.validate(raw)
         p[k] = raw[k]
     end
     if raw.language ~= "zh" and raw.language ~= "en" then return M.defaults(), "Invalid language" end
+    if raw.continuous ~= nil then
+        if type(raw.continuous) ~= "boolean" then return M.defaults(), "Invalid continuous setting" end
+        p.continuous = raw.continuous
+    end
     if raw.alternate ~= nil then
         if type(raw.alternate) ~= "boolean" then return M.defaults(), "Invalid alternating setting" end
         p.alternate = raw.alternate
@@ -28,15 +33,16 @@ function M.validate(raw)
     end
     if raw.hotkeys ~= nil then
         if type(raw.hotkeys) ~= "table" then return M.defaults(), "Invalid hotkeys" end
-        for _, name in ipairs({ "toggle", "restore" }) do
+        local used = {}
+        for _, name in ipairs(hotkeys.actions) do
             local key = raw.hotkeys[name]
-            if not effects.finite(key) or key % 1 ~= 0 or (key ~= 0 and (key < 112 or key > 123)) then
-                return M.defaults(), "Hotkeys must be disabled or F1-F12"
+            if key == nil and name ~= "toggle" and name ~= "restore" then key = p.hotkeys[name] end
+            if not hotkeys.index(key) then
+                return M.defaults(), "Invalid hotkey"
             end
+            if key ~= 0 and used[key] then return M.defaults(), "Hotkeys must be different" end
+            if key ~= 0 then used[key] = true end
             p.hotkeys[name] = key
-        end
-        if p.hotkeys.toggle ~= 0 and p.hotkeys.toggle == p.hotkeys.restore then
-            return M.defaults(), "Hotkeys must be different"
         end
     end
     if raw.body ~= nil then
